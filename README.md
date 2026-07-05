@@ -25,6 +25,8 @@ The focus is on correct use of sync.RWMutex (not sync.Mutex), a TTL mechanism wi
 | Error handling | 404 for missing keys, 400 for bad requests |
 | Graceful shutdown | context + os.Signal + http.Server.Shutdown |
 | Code structure | store/, handler/, main.go — Clean Architecture |
+| Structured logging | log/slog, JSON handler, error-level diagnostics |
+| Method-based routing | Go 1.22+ ServeMux patterns (`POST /set`), no manual method checks |
 
 ### Stack
 
@@ -52,11 +54,19 @@ The `entry` struct stores `expiresAt time.Time`, not a duration. On each Get: `t
 
 #### HTTP handler as a thin layer
 
-The handler contains no business logic. Its job: parse the request → call the store → serialize the response. The store knows nothing about HTTP. This allows testing the store without HTTP.
+The handler contains no business logic, including method validation. Its job: parse the request → call the store → serialize the response. Method routing (`POST /set`, `GET /get`, `DELETE /delete`) is expressed in the `http.ServeMux` patterns themselves (Go 1.22+ enhanced routing) — a request with the wrong method never reaches the handler; the mux replies 405 with an `Allow` header directly. The store knows nothing about HTTP. This allows testing the store without HTTP.
 
 #### Graceful shutdown
 
-http.Server.Shutdown(ctx) waits for in-flight requests to complete. Without it, in-progress requests are cut off on SIGTERM. This is standard for any production HTTP service.
+http.Server.Shutdown(ctx) waits for in-flight requests to complete. Without it, in-progress requests are cut off on SIGTERM. This is standard for any production HTTP service. The `ListenAndServe` goroutine reports its outcome over a buffered error channel so the main goroutine can both react to a startup failure (e.g. port already in use) and guarantee it never exits while that goroutine is still running — no goroutine leak on shutdown.
+
+#### Structured logging
+
+`log/slog` with a JSON handler writes to stdout. The delivery layer logs only delivery-level failures it cannot surface to the client (e.g. a broken connection during response encoding, discovered after `WriteHeader` has already been sent) — business errors (bad request, not found) are communicated via the HTTP response itself, not logged as errors.
+
+#### Request body size limit
+
+`SetKey` wraps the request body in `http.MaxBytesReader` (1 MiB cap) before decoding JSON, so a client cannot exhaust server memory with an oversized request body.
 
 ### Structure
 
@@ -77,6 +87,12 @@ kv-store/
 git clone https://github.com/Shipovmax/kv-store
 cd kv-store
 go run ./...
+```
+
+The listen address defaults to `:8080` and can be overridden via `KV_STORE_ADDR`:
+
+```bash
+KV_STORE_ADDR=:9090 go run ./...
 ```
 
 ### Usage
@@ -136,9 +152,13 @@ POST /set with body "not-json"
 POST /set with {"key":"","value":"x"}
 → HTTP 400: {"error":"key cannot be empty"}
 
-# Method not allowed
+# Method not allowed (enforced by ServeMux, not the handler)
 GET /set
-→ HTTP 405: {"error":"method not allowed"}
+→ HTTP 405, Allow: POST
+
+# Negative TTL
+POST /set with {"key":"x","value":"1","ttl_seconds":-1}
+→ HTTP 400: {"error":"ttl_seconds must not be negative"}
 
 # Key not found or expired
 GET /get?key=missing
