@@ -1,5 +1,5 @@
-// Package store реализует потокобезопасное in-memory key-value хранилище
-// с поддержкой TTL и фоновой очисткой истёкших записей.
+// Package store implements a thread-safe in-memory key-value store with
+// TTL support and background cleanup of expired entries.
 package store
 
 import (
@@ -8,45 +8,44 @@ import (
 	"time"
 )
 
-// defaultSweepInterval — период фоновой проверки истёкших ключей,
-// используемый по умолчанию, если StartSweep вызван без явного интервала.
+// defaultSweepInterval is the default period of the background sweep for
+// expired keys, used when StartSweep is called without an explicit interval.
 const defaultSweepInterval = time.Second
 
-// entry — хранимое значение вместе с моментом истечения TTL.
-// Нулевое значение expiresAt означает отсутствие TTL (ключ бессрочный).
+// entry is a stored value together with its TTL expiration moment.
+// A zero expiresAt means no TTL (the key never expires).
 type entry struct {
 	value     string
 	expiresAt time.Time
 }
 
-// expired сообщает, истёк ли TTL записи на момент now.
+// expired reports whether the entry's TTL has elapsed as of now.
 func (e entry) expired(now time.Time) bool {
 	return !e.expiresAt.IsZero() && now.After(e.expiresAt)
 }
 
-// KVStore — потокобезопасное in-memory хранилище пар ключ-значение.
-// Конкурентный доступ защищён sync.RWMutex: чтение (Get) допускает
-// произвольное число параллельных читателей, запись (Set/Delete)
-// эксклюзивна. Для read-heavy нагрузки (типичной для KV-кэша) это
-// снижает contention по сравнению с sync.Mutex.
+// KVStore is a thread-safe in-memory store of key-value pairs. Concurrent
+// access is guarded by sync.RWMutex: reads (Get) allow an arbitrary number
+// of concurrent readers, writes (Set/Delete) are exclusive. For a
+// read-heavy workload (typical of a KV cache) this reduces contention
+// compared to sync.Mutex.
 //
-// Нулевое значение KVStore непригодно для использования — создавать
-// экземпляр следует через New.
+// The zero value of KVStore is not usable — create an instance via New.
 type KVStore struct {
 	mu   sync.RWMutex
 	data map[string]entry
 }
 
-// New создаёт пустое хранилище, готовое к использованию.
+// New creates an empty store, ready for use.
 func New() *KVStore {
 	return &KVStore{
 		data: make(map[string]entry),
 	}
 }
 
-// Set записывает значение по ключу. Если ttl > 0, ключ истечёт через
-// указанный промежуток времени и станет недоступен для Get; при ttl <= 0
-// ключ хранится бессрочно (до явного Delete или перезаписи).
+// Set writes a value for key. If ttl > 0, the key expires after the given
+// duration and becomes unavailable via Get; if ttl <= 0, the key is stored
+// indefinitely (until an explicit Delete or overwrite).
 func (s *KVStore) Set(key, value string, ttl time.Duration) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -58,10 +57,11 @@ func (s *KVStore) Set(key, value string, ttl time.Duration) {
 	s.data[key] = e
 }
 
-// Get возвращает значение по ключу. Второе возвращаемое значение — false,
-// если ключ отсутствует или его TTL истёк; в последнем случае запись
-// физически удаляется из-под фоновой очистки не мгновенно, а на ближайшем
-// проходе sweep-горутины, но для читателя истёкший ключ уже недоступен.
+// Get returns the value for key. The second return value is false if the
+// key is absent or its TTL has elapsed; in the latter case the entry is
+// not physically removed immediately — that happens on the next sweep
+// goroutine pass — but the expired key is already unavailable to the
+// reader.
 func (s *KVStore) Get(key string) (string, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -73,22 +73,23 @@ func (s *KVStore) Get(key string) (string, bool) {
 	return e.value, true
 }
 
-// Delete удаляет ключ. Удаление отсутствующего ключа — no-op.
+// Delete removes a key. Deleting an absent key is a no-op.
 func (s *KVStore) Delete(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	delete(s.data, key)
 }
 
-// StartSweep запускает фоновую горутину, периодически (с периодом interval,
-// либо defaultSweepInterval при interval <= 0) удаляющую истёкшие ключи из
-// хранилища. Альтернатива — time.AfterFunc на каждый ключ — при большом
-// числе записей порождает горутину на ключ; единый тикер даёт O(1) по числу
-// фоновых горутин ценой задержки удаления до одного периода sweep.
+// StartSweep launches a background goroutine that periodically (every
+// interval, or defaultSweepInterval if interval <= 0) removes expired keys
+// from the store. The alternative — time.AfterFunc per key — spawns one
+// goroutine per key for a large number of entries; a single ticker gives
+// O(1) background goroutines at the cost of delaying deletion by up to one
+// sweep period.
 //
-// Горутина завершается при отмене ctx — это единственный путь её
-// завершения, вызывающий код обязан в конце концов отменить ctx, иначе
-// горутина будет работать до конца жизни процесса.
+// The goroutine terminates when ctx is canceled — this is its only
+// termination path; the caller must eventually cancel ctx, otherwise the
+// goroutine runs for the lifetime of the process.
 func (s *KVStore) StartSweep(ctx context.Context, interval time.Duration) {
 	if interval <= 0 {
 		interval = defaultSweepInterval
@@ -109,13 +110,13 @@ func (s *KVStore) StartSweep(ctx context.Context, interval time.Duration) {
 	}()
 }
 
-// sweepExpired удаляет из хранилища все записи с истёкшим TTL.
-// Сложность: O(n) по числу ключей за проход, O(1) дополнительной памяти —
-// иного пути обойти все записи без вспомогательного индекса по expiresAt нет;
-// при очень большом числе ключей с TTL альтернативой было бы min-heap по
-// expiresAt для амортизированного удаления без полного скана, но это
-// оправдано только при высокой доле TTL-ключей и жёстких требованиях к
-// задержке освобождения памяти.
+// sweepExpired removes all entries with an elapsed TTL from the store.
+// Complexity: O(n) in the number of keys per pass, O(1) extra memory —
+// there is no way to visit every entry without a full scan absent an
+// auxiliary index on expiresAt; for a very large number of TTL keys, a
+// min-heap ordered by expiresAt would allow amortized removal without a
+// full scan, but that is only justified when the fraction of TTL keys is
+// high and deletion latency has hard requirements.
 func (s *KVStore) sweepExpired() {
 	now := time.Now()
 

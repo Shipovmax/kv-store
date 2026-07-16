@@ -1,7 +1,7 @@
-// Package handler содержит тонкий HTTP-слой поверх store.KVStore:
-// разбор запроса, вызов хранилища, сериализация ответа. Никакой
-// бизнес-логики (валидации TTL-политик, вычислений и т.п.) здесь нет —
-// она принадлежит store.
+// Package handler is a thin HTTP layer on top of store.KVStore: request
+// parsing, store invocation, response serialization. It contains no
+// business logic (TTL policy validation, computation, etc.) — that
+// belongs to store.
 package handler
 
 import (
@@ -12,18 +12,18 @@ import (
 	"time"
 )
 
-// maxRequestBodyBytes ограничивает размер тела запроса, чтобы клиент не мог
-// исчерпать память сервера одним запросом с гигантским телом.
+// maxRequestBodyBytes caps the request body size so a client cannot
+// exhaust server memory with a single oversized request.
 const maxRequestBodyBytes = 1 << 20 // 1 MiB
 
-// Handler связывает HTTP-запросы с хранилищем KVStore.
+// Handler wires HTTP requests to a KVStore.
 type Handler struct {
 	store  *store.KVStore
 	logger *slog.Logger
 }
 
-// New создаёт Handler поверх переданного хранилища. Если logger == nil,
-// используется slog.Default().
+// New creates a Handler on top of the given store. If logger is nil,
+// slog.Default() is used.
 func New(s *store.KVStore, logger *slog.Logger) *Handler {
 	if logger == nil {
 		logger = slog.Default()
@@ -31,20 +31,20 @@ func New(s *store.KVStore, logger *slog.Logger) *Handler {
 	return &Handler{store: s, logger: logger}
 }
 
-// setRequest — тело запроса POST /set.
+// setRequest is the request body for POST /set.
 type setRequest struct {
 	Key   string `json:"key"`
 	Value string `json:"value"`
-	// TTLSeconds — время жизни ключа в секундах. 0 или отсутствие поля
-	// означает бессрочное хранение. Отрицательное значение — ошибка 400.
+	// TTLSeconds is the key's time-to-live in seconds. 0 or an absent
+	// field means the key never expires. A negative value is a 400 error.
 	TTLSeconds int `json:"ttl_seconds"`
 }
 
-// SetKey обрабатывает POST /set.
+// SetKey handles POST /set.
 //
-// Запрос: JSON { "key": string, "value": string, "ttl_seconds"?: int }.
-// Ответ: 200 { "ok": true }.
-// Ошибки: 400 при невалидном JSON, пустом key или отрицательном ttl_seconds.
+// Request: JSON { "key": string, "value": string, "ttl_seconds"?: int }.
+// Response: 200 { "ok": true }.
+// Errors: 400 on invalid JSON, empty key, or negative ttl_seconds.
 func (h *Handler) SetKey(w http.ResponseWriter, r *http.Request) {
 	r.Body = http.MaxBytesReader(w, r.Body, maxRequestBodyBytes)
 
@@ -67,11 +67,11 @@ func (h *Handler) SetKey(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// GetKey обрабатывает GET /get?key=....
+// GetKey handles GET /get?key=....
 //
-// Ответ: 200 { "key": string, "value": string }.
-// Ошибки: 400 при отсутствующем параметре key, 404 если ключ не найден
-// или истёк.
+// Response: 200 { "key": string, "value": string }.
+// Errors: 400 if the key parameter is missing, 404 if the key is not found
+// or has expired.
 func (h *Handler) GetKey(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("key")
 	if key == "" {
@@ -88,10 +88,10 @@ func (h *Handler) GetKey(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, map[string]string{"key": key, "value": value})
 }
 
-// DeleteKey обрабатывает DELETE /delete?key=....
+// DeleteKey handles DELETE /delete?key=....
 //
-// Ответ: 200 { "ok": true } — идемпотентно, в том числе для отсутствующего
-// ключа. Ошибки: 400 при отсутствующем параметре key.
+// Response: 200 { "ok": true } — idempotent, including for an absent key.
+// Errors: 400 if the key parameter is missing.
 func (h *Handler) DeleteKey(w http.ResponseWriter, r *http.Request) {
 	key := r.URL.Query().Get("key")
 	if key == "" {
@@ -103,10 +103,10 @@ func (h *Handler) DeleteKey(w http.ResponseWriter, r *http.Request) {
 	h.writeJSON(w, http.StatusOK, map[string]bool{"ok": true})
 }
 
-// writeJSON сериализует v в тело ответа. Ошибка кодирования возможна только
-// после того как заголовки уже отправлены (WriteHeader вызван), поэтому
-// клиенту её сообщить нельзя — она логируется структурированно как
-// диагностика на стороне сервера.
+// writeJSON serializes v into the response body. An encoding error can
+// only occur after headers have already been sent (WriteHeader has been
+// called), so it cannot be reported to the client — it is logged
+// structurally as server-side diagnostics instead.
 func (h *Handler) writeJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)

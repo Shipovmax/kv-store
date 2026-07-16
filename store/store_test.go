@@ -128,8 +128,8 @@ func TestStartSweepStopsOnContextCancel(t *testing.T) {
 	s.StartSweep(ctx, 5*time.Millisecond)
 	cancel()
 
-	// Даём горутине время заметить отмену контекста и завершиться.
-	// Явного способа дождаться выхода горутины без утечки в публичном API
-	// нет — тест лишь фиксирует отсутствие паники/дедлока после отмены.
+	// Give the goroutine time to notice the context cancellation and exit.
+	// The public API has no explicit way to wait for goroutine exit without
+	// leaking one — this test only asserts no panic/deadlock after cancel.
 	time.Sleep(50 * time.Millisecond)
 }

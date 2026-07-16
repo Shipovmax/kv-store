@@ -1,5 +1,5 @@
-// Command kv-store запускает HTTP-сервер поверх in-memory KV-хранилища
-// с поддержкой TTL и graceful shutdown по SIGINT/SIGTERM.
+// Command kv-store runs an HTTP server on top of an in-memory KV store
+// with TTL support and graceful shutdown on SIGINT/SIGTERM.
 package main
 
 import (
@@ -15,12 +15,12 @@ import (
 	"time"
 )
 
-// defaultAddr — адрес HTTP-сервера, если переменная окружения KV_STORE_ADDR
-// не задана.
+// defaultAddr is the HTTP server address used when the KV_STORE_ADDR
+// environment variable is not set.
 const defaultAddr = ":8080"
 
-// shutdownTimeout — максимальное время ожидания завершения in-flight
-// запросов при остановке сервера.
+// shutdownTimeout is the maximum time to wait for in-flight requests to
+// complete when the server is stopping.
 const shutdownTimeout = 5 * time.Second
 
 func main() {
@@ -87,8 +87,8 @@ func run(logger *slog.Logger) error {
 		return err
 	}
 
-	// srv.Shutdown возвращается после того, как ListenAndServe в горутине
-	// завершится и отправит в serveErr — ждём этого, чтобы не завершать
-	// процесс с висящей незавершённой горутиной.
+	// srv.Shutdown returns after the ListenAndServe goroutine has finished
+	// and sent to serveErr — we wait for that so the process never exits
+	// while that goroutine is still running.
 	return <-serveErr
 }
